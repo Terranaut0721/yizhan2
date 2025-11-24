@@ -3,8 +3,8 @@ import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
   signInAnonymously, 
-  onAuthStateChanged,
-  signInWithCustomToken
+  signInWithCustomToken,
+  onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -46,14 +46,41 @@ import {
   Siren
 } from 'lucide-react';
 
-// --- Firebase Configuration & Initialization ---
-const firebaseConfig = JSON.parse(__firebase_config);
+// --- 配置区域 ---
+
+let firebaseConfig;
+let appId;
+let initialAuthToken;
+
+// 智能判断环境：
+if (typeof __firebase_config !== 'undefined') {
+  // 场景 A: 在线预览环境 (自动获取配置)
+  console.log("Environment: Online Preview Mode");
+  firebaseConfig = JSON.parse(__firebase_config);
+  appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+} else {
+  // 场景 B: 本地开发环境 (Local Development)
+  // 当你下载代码在本地运行时，请在此处填入你的 Firebase 项目配置
+  console.log("Environment: Local Development Mode");
+  firebaseConfig = {
+    apiKey: "YOUR_API_KEY", // 请替换为你的 API Key
+    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT_ID.appspot.com",
+    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+    appId: "YOUR_APP_ID"
+  };
+  appId = 'my-team-points-app'; // 本地开发时可以使用任意字符串
+  initialAuthToken = null;
+}
+
+// --- 初始化 Firebase ---
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-// --- Components ---
+// --- 组件部分 ---
 
 const LoadingSpinner = () => (
   <div className="flex justify-center items-center h-64">
@@ -65,7 +92,7 @@ const Modal = ({ isOpen, onClose, title, children }) => {
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex justify-center items-center p-4 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-fade-in-up border-t-4 border-orange-400">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden border-t-4 border-orange-400">
         <div className="flex justify-between items-center px-6 py-4 border-b border-orange-100 bg-orange-50">
           <h3 className="text-lg font-bold text-gray-800">{title}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-orange-500 transition-colors">
@@ -78,7 +105,7 @@ const Modal = ({ isOpen, onClose, title, children }) => {
   );
 };
 
-// --- Main Application Component ---
+// --- 主程序组件 ---
 export default function App() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -95,7 +122,7 @@ export default function App() {
   // Delete Confirmation State
   const [deleteConfirm, setDeleteConfirm] = useState({
     isOpen: false,
-    type: null, // 'record' or 'member'
+    type: null,
     id: null,
     title: '',
     message: ''
@@ -122,10 +149,16 @@ export default function App() {
   // --- Authentication & Data Fetching ---
   useEffect(() => {
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
+      try {
+        if (initialAuthToken) {
+           // 在线预览环境：使用预置 Token 登录
+           await signInWithCustomToken(auth, initialAuthToken);
+        } else {
+           // 本地环境：使用匿名登录
+           await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Authentication failed:", error);
       }
     };
     initAuth();
@@ -140,17 +173,32 @@ export default function App() {
     if (!user) return;
 
     // Fetch Members
-    const membersQuery = query(collection(db, 'artifacts', appId, 'public', 'data', 'members'));
+    // 使用统一的路径结构
+    // 注意：如果是本地运行，数据将存储在你自己的 Firebase 'team_data' 集合中
+    // 如果是在线运行，数据存储在沙盒中
+    const collectionPath = typeof __firebase_config !== 'undefined' 
+        ? ['artifacts', appId, 'public', 'data', 'members'] // Online path
+        : ['team_data', appId, 'members']; // Local path
+
+    const membersRef = collection(db, ...collectionPath);
+    const membersQuery = query(membersRef);
+    
     const unsubMembers = onSnapshot(membersQuery, (snapshot) => {
       const fetchedMembers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMembers(fetchedMembers);
     }, (error) => console.error("Error fetching members:", error));
 
     // Fetch Records
+    const recordsPath = typeof __firebase_config !== 'undefined' 
+        ? ['artifacts', appId, 'public', 'data', 'records'] // Online path
+        : ['team_data', appId, 'records']; // Local path
+
+    const recordsRef = collection(db, ...recordsPath);
     const recordsQuery = query(
-      collection(db, 'artifacts', appId, 'public', 'data', 'records'),
+      recordsRef,
       orderBy('date', 'desc')
     );
+    
     const unsubRecords = onSnapshot(recordsQuery, (snapshot) => {
       const fetchedRecords = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setRecords(fetchedRecords);
@@ -196,7 +244,11 @@ export default function App() {
   const handleAddMember = async () => {
     if (!newMember.name) return;
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'members'), {
+      const collectionPath = typeof __firebase_config !== 'undefined' 
+        ? ['artifacts', appId, 'public', 'data', 'members'] 
+        : ['team_data', appId, 'members'];
+        
+      await addDoc(collection(db, ...collectionPath), {
         ...newMember,
         createdAt: serverTimestamp()
       });
@@ -223,7 +275,11 @@ export default function App() {
     const selectedMember = members.find(m => m.id === newRecord.memberId);
     
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'records'), {
+      const collectionPath = typeof __firebase_config !== 'undefined' 
+        ? ['artifacts', appId, 'public', 'data', 'records'] 
+        : ['team_data', appId, 'records'];
+
+      await addDoc(collection(db, ...collectionPath), {
         ...newRecord,
         memberName: selectedMember?.name || 'Unknown',
         memberGroup: selectedMember?.group || 'Unknown',
@@ -252,10 +308,14 @@ export default function App() {
     if (!type || !id) return;
 
     try {
+      const pathPrefix = typeof __firebase_config !== 'undefined' 
+        ? ['artifacts', appId, 'public', 'data'] 
+        : ['team_data', appId];
+
       if (type === 'member') {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'members', id));
+        await deleteDoc(doc(db, ...pathPrefix, 'members', id));
       } else if (type === 'record') {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'records', id));
+        await deleteDoc(doc(db, ...pathPrefix, 'records', id));
       }
       setDeleteConfirm({ isOpen: false, type: null, id: null, title: '', message: '' });
     } catch (error) {
@@ -267,351 +327,6 @@ export default function App() {
   const COLORS = ['#f97316', '#f59e0b', '#fbbf24', '#ea580c', '#84cc16'];
 
   if (loading) return <LoadingSpinner />;
-
-  // --- Render Functions ---
-
-  const renderDashboard = () => {
-    // Calculate low ranking members (bottom 3)
-    // We reverse the sorted list (high->low) to get (low->high), then take the first 3
-    const lowRankingMembers = [...stats.sortedByPoints].reverse().slice(0, 3);
-
-    return (
-      <div className="space-y-6 animate-fade-in">
-        
-        {/* NEW: Low Ranking Alert Section */}
-        {members.length > 0 && (
-          <div className="bg-red-50 p-6 rounded-2xl shadow-sm border border-red-100 relative overflow-hidden">
-            <div className="absolute right-0 top-0 opacity-5 pointer-events-none">
-               <Siren size={150} />
-            </div>
-            <h3 className="text-lg font-bold text-red-800 mb-4 flex items-center relative z-10">
-              <AlertTriangle size={20} className="mr-2 text-red-600 animate-pulse" />
-              积分预警 (后三名)
-              <span className="ml-2 text-xs font-normal text-red-600 bg-red-100 px-2 py-0.5 rounded-full">需要关注</span>
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 relative z-10">
-              {lowRankingMembers.map((member, index) => (
-                <div key={member.id} className="bg-white p-4 rounded-xl border border-red-100 flex items-center justify-between shadow-sm hover:shadow-md transition-all">
-                    <div className="flex items-center">
-                      <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold text-sm mr-3">
-                        {index + 1}
-                      </div>
-                      <div>
-                        <p className="font-bold text-gray-800">{member.name}</p>
-                        <p className="text-xs text-gray-500">{member.group}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <span className="block font-black text-red-500 text-lg">{member.totalPoints}</span>
-                      <span className="text-[10px] text-gray-400 uppercase">当前积分</span>
-                    </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Top Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-gradient-to-br from-orange-50 to-white p-6 rounded-2xl shadow-sm border border-orange-100 flex items-center hover:shadow-md transition-shadow">
-            <div className="p-3 bg-orange-500 rounded-xl text-white mr-4 shadow-orange-200 shadow-lg">
-              <Award size={24} />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-orange-600/70 uppercase tracking-wider">积分榜首</p>
-              <p className="text-2xl font-black text-gray-800">
-                {stats.sortedByPoints[0]?.name || '暂无数据'}
-                <span className="text-sm font-bold text-orange-400 ml-2">
-                  ({stats.sortedByPoints[0]?.totalPoints || 0} 分)
-                </span>
-              </p>
-            </div>
-          </div>
-          <div className="bg-gradient-to-br from-amber-50 to-white p-6 rounded-2xl shadow-sm border border-amber-100 flex items-center hover:shadow-md transition-shadow">
-            <div className="p-3 bg-amber-400 rounded-xl text-white mr-4 shadow-amber-200 shadow-lg">
-              <ClipboardList size={24} />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-amber-600/70 uppercase tracking-wider">总任务数</p>
-              <p className="text-2xl font-black text-gray-800">{records.length}</p>
-            </div>
-          </div>
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center hover:shadow-md transition-shadow">
-            <div className="p-3 bg-gray-100 rounded-xl text-gray-500 mr-4">
-              <Users size={24} />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-500 uppercase tracking-wider">团队成员</p>
-              <p className="text-2xl font-black text-gray-800">{members.length}</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Charts Area */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Bar Chart */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
-              <TrendingUp size={20} className="mr-2 text-orange-500" />
-              成员积分排行榜
-            </h3>
-            <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={stats.sortedByPoints} layout="vertical" margin={{ left: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f3f4f6" />
-                  <XAxis type="number" tickLine={false} axisLine={false} />
-                  <YAxis dataKey="name" type="category" width={80} tickLine={false} axisLine={false} />
-                  <Tooltip 
-                    cursor={{ fill: '#fff7ed' }}
-                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', padding: '12px' }}
-                  />
-                  <Bar dataKey="totalPoints" fill="#f97316" radius={[0, 6, 6, 0]} barSize={20} name="总积分" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Pie Chart */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
-              <div className="w-2 h-5 bg-amber-400 rounded-full mr-2"></div>
-              小组贡献占比
-            </h3>
-            <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={stats.pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={100}
-                    fill="#8884d8"
-                    paddingAngle={5}
-                    dataKey="value"
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                  >
-                    {stats.pieData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="none" />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={{ borderRadius: '12px' }} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-        
-        {/* Recent Activity */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-orange-50/50">
-            <h3 className="font-bold text-gray-800 flex items-center">
-              <Sun size={18} className="mr-2 text-orange-400" />
-              最新工作动态
-            </h3>
-            <button 
-              onClick={() => setActiveTab('records')}
-              className="text-sm text-orange-600 hover:text-orange-700 font-medium hover:underline"
-            >
-              查看全部 &rarr;
-            </button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left">
-              <thead className="text-gray-400 bg-gray-50 uppercase font-medium text-xs">
-                <tr>
-                  <th className="px-6 py-3">日期</th>
-                  <th className="px-6 py-3">组别</th>
-                  <th className="px-6 py-3">姓名</th>
-                  <th className="px-6 py-3">任务内容</th>
-                  <th className="px-6 py-3 text-right">积分</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {records.slice(0, 5).map(record => (
-                  <tr key={record.id} className="hover:bg-orange-50/30 transition-colors">
-                    <td className="px-6 py-3 text-gray-500 font-mono text-xs">{record.date}</td>
-                    <td className="px-6 py-3">
-                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${
-                        record.memberGroup === '活动组' ? 'bg-orange-50 text-orange-600 border-orange-100' :
-                        record.memberGroup === '心理剧组' ? 'bg-amber-50 text-amber-600 border-amber-100' :
-                        'bg-gray-50 text-gray-600 border-gray-100'
-                      }`}>
-                        {record.memberGroup}
-                      </span>
-                    </td>
-                    <td className="px-6 py-3 font-semibold text-gray-700">{record.memberName}</td>
-                    <td className="px-6 py-3 text-gray-600 max-w-xs truncate">{record.task}</td>
-                    <td className="px-6 py-3 text-right font-black text-orange-500">+{record.points}</td>
-                  </tr>
-                ))}
-                {records.length === 0 && (
-                  <tr>
-                    <td colSpan="5" className="px-6 py-8 text-center text-gray-400">暂无记录，快去添加第一条工作吧！</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderRecords = () => {
-    // Filter records
-    const filteredRecords = records.filter(record => {
-      const matchesSearch = 
-        record.memberName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        record.task.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesGroup = filterGroup === 'all' || record.memberGroup === filterGroup;
-      return matchesSearch && matchesGroup;
-    });
-
-    const uniqueGroups = ['all', ...new Set(members.map(m => m.group))];
-
-    return (
-      <div className="space-y-4 animate-fade-in">
-        <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
-          <div className="flex items-center gap-2 w-full md:w-auto">
-             <div className="relative w-full md:w-64">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-300" size={18} />
-                <input 
-                  type="text" 
-                  placeholder="搜索姓名或任务..." 
-                  className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-400 transition-all"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-             </div>
-             <select 
-              className="border border-gray-200 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-400 transition-all"
-              value={filterGroup}
-              onChange={(e) => setFilterGroup(e.target.value)}
-             >
-               {uniqueGroups.map(g => (
-                 <option key={g} value={g}>{g === 'all' ? '所有组别' : g}</option>
-               ))}
-             </select>
-          </div>
-          <button 
-            onClick={() => setIsRecordModalOpen(true)}
-            className="w-full md:w-auto flex items-center justify-center gap-2 bg-orange-500 text-white px-5 py-2.5 rounded-xl hover:bg-orange-600 transition-all shadow-md hover:shadow-lg transform active:scale-95 font-bold"
-          >
-            <Plus size={20} /> 记一笔
-          </button>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead className="bg-orange-50/50 text-gray-400 uppercase text-xs font-bold tracking-wider">
-                <tr>
-                  <th className="px-6 py-4">日期</th>
-                  <th className="px-6 py-4">姓名 / 组别</th>
-                  <th className="px-6 py-4">工作任务内容</th>
-                  <th className="px-6 py-4 text-center">积分</th>
-                  <th className="px-6 py-4 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50 text-sm">
-                {filteredRecords.map(record => (
-                  <tr key={record.id} className="hover:bg-orange-50/20 group">
-                    <td className="px-6 py-4 whitespace-nowrap text-gray-500 font-mono text-xs">{record.date}</td>
-                    <td className="px-6 py-4">
-                      <div className="font-bold text-gray-800">{record.memberName}</div>
-                      <div className="text-xs text-orange-400 font-medium">{record.memberGroup}</div>
-                    </td>
-                    <td className="px-6 py-4 text-gray-600">{record.task}</td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black bg-orange-100 text-orange-600">
-                        +{record.points}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <button 
-                        onClick={() => requestDeleteRecord(record.id)}
-                        className="text-gray-300 hover:text-red-500 transition-colors p-2 rounded-full hover:bg-red-50"
-                        title="删除"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {filteredRecords.length === 0 && (
-                  <tr>
-                    <td colSpan="5" className="px-6 py-12 text-center text-gray-400">
-                      <div className="flex flex-col items-center">
-                        <ClipboardList size={48} className="mb-2 opacity-20 text-orange-300" />
-                        <p>没有找到相关记录</p>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderMembers = () => (
-    <div className="space-y-4 animate-fade-in">
-       <div className="flex justify-between items-center bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-         <div>
-           <h2 className="text-lg font-bold text-gray-800">团队成员管理</h2>
-           <p className="text-sm text-gray-500">管理你的小组成员，他们的名字将出现在录入选项中。</p>
-         </div>
-         <button 
-            onClick={() => setIsMemberModalOpen(true)}
-            className="flex items-center gap-2 bg-white text-orange-600 border-2 border-orange-100 px-4 py-2 rounded-xl hover:border-orange-500 hover:bg-orange-50 transition-all font-bold"
-          >
-            <Plus size={18} /> 添加成员
-          </button>
-       </div>
-
-       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-         {stats.memberStats.map(member => (
-           <div key={member.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow relative group">
-             <div className="flex justify-between items-start mb-2">
-                <div className="flex items-center">
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-lg mr-3 shadow-md transform rotate-3 ${
-                    member.group === '活动组' ? 'bg-gradient-to-br from-orange-400 to-orange-600' : 
-                    member.group === '心理剧组' ? 'bg-gradient-to-br from-amber-400 to-amber-600' : 'bg-gray-400'
-                  }`}>
-                    {member.name.charAt(0)}
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-800 text-lg">{member.name}</h3>
-                    <span className="text-xs font-semibold text-orange-500 bg-orange-50 px-2 py-0.5 rounded-md border border-orange-100">{member.group}</span>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => requestDeleteMember(member.id, member.name)}
-                  className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-2"
-                  title="删除成员"
-                >
-                  <Trash2 size={18} />
-                </button>
-             </div>
-             <div className="mt-4 pt-4 border-t border-gray-50 grid grid-cols-2 gap-2 text-center">
-                <div>
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">总积分</p>
-                  <p className="text-xl font-black text-orange-500">{member.totalPoints}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">完成任务</p>
-                  <p className="text-xl font-black text-gray-700">{member.taskCount}</p>
-                </div>
-             </div>
-           </div>
-         ))}
-       </div>
-    </div>
-  );
 
   return (
     <div className="flex h-screen bg-[#fffbf0] font-sans text-gray-900 selection:bg-orange-100">
@@ -655,13 +370,6 @@ export default function App() {
             <span className={`hidden md:block font-bold ${activeTab === 'members' ? '' : 'font-medium'}`}>成员管理</span>
           </button>
         </nav>
-        
-        <div className="p-4 border-t border-gray-100">
-          <div className="text-xs text-gray-300 text-center md:text-left">
-            <span className="hidden md:inline">Current App ID: </span>
-            <span className="font-mono">{appId.substring(0,6)}...</span>
-          </div>
-        </div>
       </div>
 
       {/* Main Content */}
@@ -684,15 +392,13 @@ export default function App() {
         </header>
         
         <main className="p-4 md:p-8 max-w-7xl mx-auto">
-          {activeTab === 'dashboard' && renderDashboard()}
-          {activeTab === 'records' && renderRecords()}
-          {activeTab === 'members' && renderMembers()}
+          {activeTab === 'dashboard' && renderDashboard(stats, records, members, COLORS)}
+          {activeTab === 'records' && renderRecords(records, members, searchTerm, setSearchTerm, filterGroup, setFilterGroup, setIsRecordModalOpen, requestDeleteRecord)}
+          {activeTab === 'members' && renderMembers(stats, setIsMemberModalOpen, requestDeleteMember)}
         </main>
       </div>
 
-      {/* Modals */}
-      
-      {/* Add Record Modal */}
+      {/* Modals & Dashboard Logic would be here (truncated for brevity, logic is same as before but uses local vars) */}
       <Modal 
         isOpen={isRecordModalOpen} 
         onClose={() => setIsRecordModalOpen(false)} 
@@ -762,7 +468,6 @@ export default function App() {
         </div>
       </Modal>
 
-      {/* Add Member Modal */}
       <Modal 
         isOpen={isMemberModalOpen} 
         onClose={() => setIsMemberModalOpen(false)} 
@@ -816,7 +521,6 @@ export default function App() {
         </div>
       </Modal>
 
-      {/* Delete Confirmation Modal */}
       <Modal 
         isOpen={deleteConfirm.isOpen} 
         onClose={() => setDeleteConfirm({ ...deleteConfirm, isOpen: false })} 
@@ -847,4 +551,269 @@ export default function App() {
 
     </div>
   );
+  
+  // 辅助渲染函数 (移到组件内部最下方定义，或保持不变)
+  function renderDashboard(stats, records, members, COLORS) {
+    const lowRankingMembers = [...stats.sortedByPoints].reverse().slice(0, 3);
+    return (
+      <div className="space-y-6 animate-fade-in">
+        {members.length > 0 && (
+          <div className="bg-red-50 p-6 rounded-2xl shadow-sm border border-red-100 relative overflow-hidden">
+            <div className="absolute right-0 top-0 opacity-5 pointer-events-none">
+               <Siren size={150} />
+            </div>
+            <h3 className="text-lg font-bold text-red-800 mb-4 flex items-center relative z-10">
+              <AlertTriangle size={20} className="mr-2 text-red-600 animate-pulse" />
+              积分预警 (后三名)
+              <span className="ml-2 text-xs font-normal text-red-600 bg-red-100 px-2 py-0.5 rounded-full">需要关注</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 relative z-10">
+              {lowRankingMembers.map((member, index) => (
+                <div key={member.id} className="bg-white p-4 rounded-xl border border-red-100 flex items-center justify-between shadow-sm hover:shadow-md transition-all">
+                    <div className="flex items-center">
+                      <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-bold text-sm mr-3">
+                        {index + 1}
+                      </div>
+                      <div>
+                        <p className="font-bold text-gray-800">{member.name}</p>
+                        <p className="text-xs text-gray-500">{member.group}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="block font-black text-red-500 text-lg">{member.totalPoints}</span>
+                      <span className="text-[10px] text-gray-400 uppercase">当前积分</span>
+                    </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="bg-gradient-to-br from-orange-50 to-white p-6 rounded-2xl shadow-sm border border-orange-100 flex items-center hover:shadow-md transition-shadow">
+            <div className="p-3 bg-orange-500 rounded-xl text-white mr-4 shadow-orange-200 shadow-lg">
+              <Award size={24} />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-orange-600/70 uppercase tracking-wider">积分榜首</p>
+              <p className="text-2xl font-black text-gray-800">
+                {stats.sortedByPoints[0]?.name || '暂无数据'}
+                <span className="text-sm font-bold text-orange-400 ml-2">
+                  ({stats.sortedByPoints[0]?.totalPoints || 0} 分)
+                </span>
+              </p>
+            </div>
+          </div>
+          <div className="bg-gradient-to-br from-amber-50 to-white p-6 rounded-2xl shadow-sm border border-amber-100 flex items-center hover:shadow-md transition-shadow">
+            <div className="p-3 bg-amber-400 rounded-xl text-white mr-4 shadow-amber-200 shadow-lg">
+              <ClipboardList size={24} />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-amber-600/70 uppercase tracking-wider">总任务数</p>
+              <p className="text-2xl font-black text-gray-800">{records.length}</p>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center hover:shadow-md transition-shadow">
+            <div className="p-3 bg-gray-100 rounded-xl text-gray-500 mr-4">
+              <Users size={24} />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-500 uppercase tracking-wider">团队成员</p>
+              <p className="text-2xl font-black text-gray-800">{members.length}</p>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
+              <TrendingUp size={20} className="mr-2 text-orange-500" />
+              成员积分排行榜
+            </h3>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={stats.sortedByPoints} layout="vertical" margin={{ left: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f3f4f6" />
+                  <XAxis type="number" tickLine={false} axisLine={false} />
+                  <YAxis dataKey="name" type="category" width={80} tickLine={false} axisLine={false} />
+                  <Tooltip cursor={{ fill: '#fff7ed' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', padding: '12px' }} />
+                  <Bar dataKey="totalPoints" fill="#f97316" radius={[0, 6, 6, 0]} barSize={20} name="总积分" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center">
+              <div className="w-2 h-5 bg-amber-400 rounded-full mr-2"></div>
+              小组贡献占比
+            </h3>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={stats.pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} fill="#8884d8" paddingAngle={5} dataKey="value" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                    {stats.pieData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="none" />
+                    ))}
+                  </Pie>
+                  <Tooltip contentStyle={{ borderRadius: '12px' }} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-orange-50/50">
+            <h3 className="font-bold text-gray-800 flex items-center">
+              <Sun size={18} className="mr-2 text-orange-400" />
+              最新工作动态
+            </h3>
+            <button onClick={() => setActiveTab('records')} className="text-sm text-orange-600 hover:text-orange-700 font-medium hover:underline">
+              查看全部 &rarr;
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-gray-400 bg-gray-50 uppercase font-medium text-xs">
+                <tr>
+                  <th className="px-6 py-3">日期</th>
+                  <th className="px-6 py-3">组别</th>
+                  <th className="px-6 py-3">姓名</th>
+                  <th className="px-6 py-3">任务内容</th>
+                  <th className="px-6 py-3 text-right">积分</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {records.slice(0, 5).map(record => (
+                  <tr key={record.id} className="hover:bg-orange-50/30 transition-colors">
+                    <td className="px-6 py-3 text-gray-500 font-mono text-xs">{record.date}</td>
+                    <td className="px-6 py-3">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${record.memberGroup === '活动组' ? 'bg-orange-50 text-orange-600 border-orange-100' : record.memberGroup === '心理剧组' ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-gray-50 text-gray-600 border-gray-100'}`}>
+                        {record.memberGroup}
+                      </span>
+                    </td>
+                    <td className="px-6 py-3 font-semibold text-gray-700">{record.memberName}</td>
+                    <td className="px-6 py-3 text-gray-600 max-w-xs truncate">{record.task}</td>
+                    <td className="px-6 py-3 text-right font-black text-orange-500">+{record.points}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderRecords(records, members, searchTerm, setSearchTerm, filterGroup, setFilterGroup, setIsRecordModalOpen, requestDeleteRecord) {
+    const filteredRecords = records.filter(record => {
+      const matchesSearch = record.memberName.toLowerCase().includes(searchTerm.toLowerCase()) || record.task.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesGroup = filterGroup === 'all' || record.memberGroup === filterGroup;
+      return matchesSearch && matchesGroup;
+    });
+    const uniqueGroups = ['all', ...new Set(members.map(m => m.group))];
+    
+    return (
+      <div className="space-y-4 animate-fade-in">
+        <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+          <div className="flex items-center gap-2 w-full md:w-auto">
+             <div className="relative w-full md:w-64">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-300" size={18} />
+                <input type="text" placeholder="搜索姓名或任务..." className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-400 transition-all" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+             </div>
+             <select className="border border-gray-200 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-400 transition-all" value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)}>
+               {uniqueGroups.map(g => (
+                 <option key={g} value={g}>{g === 'all' ? '所有组别' : g}</option>
+               ))}
+             </select>
+          </div>
+          <button onClick={() => setIsRecordModalOpen(true)} className="w-full md:w-auto flex items-center justify-center gap-2 bg-orange-500 text-white px-5 py-2.5 rounded-xl hover:bg-orange-600 transition-all shadow-md hover:shadow-lg transform active:scale-95 font-bold">
+            <Plus size={20} /> 记一笔
+          </button>
+        </div>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="bg-orange-50/50 text-gray-400 uppercase text-xs font-bold tracking-wider">
+                <tr>
+                  <th className="px-6 py-4">日期</th>
+                  <th className="px-6 py-4">姓名 / 组别</th>
+                  <th className="px-6 py-4">工作任务内容</th>
+                  <th className="px-6 py-4 text-center">积分</th>
+                  <th className="px-6 py-4 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50 text-sm">
+                {filteredRecords.map(record => (
+                  <tr key={record.id} className="hover:bg-orange-50/20 group">
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-500 font-mono text-xs">{record.date}</td>
+                    <td className="px-6 py-4">
+                      <div className="font-bold text-gray-800">{record.memberName}</div>
+                      <div className="text-xs text-orange-400 font-medium">{record.memberGroup}</div>
+                    </td>
+                    <td className="px-6 py-4 text-gray-600">{record.task}</td>
+                    <td className="px-6 py-4 text-center">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black bg-orange-100 text-orange-600">
+                        +{record.points}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <button onClick={() => requestDeleteRecord(record.id)} className="text-gray-300 hover:text-red-500 transition-colors p-2 rounded-full hover:bg-red-50" title="删除">
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderMembers(stats, setIsMemberModalOpen, requestDeleteMember) {
+     return (
+    <div className="space-y-4 animate-fade-in">
+       <div className="flex justify-between items-center bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+         <div>
+           <h2 className="text-lg font-bold text-gray-800">团队成员管理</h2>
+           <p className="text-sm text-gray-500">管理你的小组成员，他们的名字将出现在录入选项中。</p>
+         </div>
+         <button onClick={() => setIsMemberModalOpen(true)} className="flex items-center gap-2 bg-white text-orange-600 border-2 border-orange-100 px-4 py-2 rounded-xl hover:border-orange-500 hover:bg-orange-50 transition-all font-bold">
+            <Plus size={18} /> 添加成员
+          </button>
+       </div>
+
+       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+         {stats.memberStats.map(member => (
+           <div key={member.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow relative group">
+             <div className="flex justify-between items-start mb-2">
+                <div className="flex items-center">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-lg mr-3 shadow-md transform rotate-3 ${member.group === '活动组' ? 'bg-gradient-to-br from-orange-400 to-orange-600' : member.group === '心理剧组' ? 'bg-gradient-to-br from-amber-400 to-amber-600' : 'bg-gray-400'}`}>
+                    {member.name.charAt(0)}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-800 text-lg">{member.name}</h3>
+                    <span className="text-xs font-semibold text-orange-500 bg-orange-50 px-2 py-0.5 rounded-md border border-orange-100">{member.group}</span>
+                  </div>
+                </div>
+                <button onClick={() => requestDeleteMember(member.id, member.name)} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-2" title="删除成员">
+                  <Trash2 size={18} />
+                </button>
+             </div>
+             <div className="mt-4 pt-4 border-t border-gray-50 grid grid-cols-2 gap-2 text-center">
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">总积分</p>
+                  <p className="text-xl font-black text-orange-500">{member.totalPoints}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">完成任务</p>
+                  <p className="text-xl font-black text-gray-700">{member.taskCount}</p>
+                </div>
+             </div>
+           </div>
+         ))}
+       </div>
+    </div>
+  );
+  }
 }
